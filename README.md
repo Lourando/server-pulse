@@ -54,6 +54,14 @@ Docker и VPN AmneziaWG (процесс `amneziawg-go`). Доступ к нем�
 
 ![Панель Server Pulse на VPS](screenshots/01_dashboard_vps.png)
 
+### Служба systemd и лог на сервере
+
+Служба запущена от отдельного пользователя и слушает только `127.0.0.1`. В
+журнале видно обновление: остановка старой версии, запуск 0.4.1 и настройки,
+с которыми она стартовала.
+
+![systemctl status и journalctl](screenshots/02_systemd_service.png)
+
 ### Документация API на сервере
 
 ![Документация /docs](screenshots/03_api_docs.png)

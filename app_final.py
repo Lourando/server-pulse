@@ -11,17 +11,31 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 
 # Подхватываем настройки из файла .env, если он есть.
 # Переменные, уже заданные в системе, имеют приоритет над файлом
 load_dotenv()
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+# Если задан LOG_FILE, лог пишется ещё и в этот файл (кроме консоли)
+LOG_FILE = os.getenv("LOG_FILE")
+
+log_handlers = [logging.StreamHandler()]
+if LOG_FILE:
+    log_handlers.append(logging.FileHandler(LOG_FILE, encoding="utf-8"))
+
 logging.basicConfig(
     level=LOG_LEVEL,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=log_handlers,
 )
+if LOG_FILE:
+    # У uvicorn свои логгеры (старт сервера и строки запросов),
+    # подключаем файл и к ним, чтобы в файле была полная картина
+    for uvicorn_logger in ("uvicorn", "uvicorn.access"):
+        logging.getLogger(uvicorn_logger).addHandler(log_handlers[-1])
+
 logger = logging.getLogger("server_pulse")
 
 

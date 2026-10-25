@@ -1,0 +1,30 @@
+# Служба systemd для Server Pulse.
+# Установка: sudo cp deploy/server-pulse.service /etc/systemd/system/
+# Подробности в README, раздел «Развёртывание на сервере».
+
+[Unit]
+Description=Server Pulse monitoring service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Отдельный системный пользователь без входа в систему и без прав root
+User=serverpulse
+Group=serverpulse
+WorkingDirectory=/opt/server-pulse
+# Слушаем только 127.0.0.1: из интернета сервис не виден,
+# доступ через SSH-туннель
+ExecStart=/opt/server-pulse/.venv/bin/python -m uvicorn app_final:app --host 127.0.0.1 --port 8000
+# Если процесс упал, systemd перезапустит его через 5 секунд
+Restart=on-failure
+RestartSec=5
+
+# Ограничения безопасности: сервис только читает систему
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

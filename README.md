@@ -213,6 +213,84 @@ Get-Content server.log -Wait -Encoding UTF8         # Windows PowerShell
 | Изменения в `.env` не применились | перезапустите сервис: `--reload` следит только за `.py` |
 | `/watch` не видит процесс | на Windows имя пишется без `.exe`; проверьте точное имя через `/processes/top` |
 
+## Развёртывание на сервере (Ubuntu + systemd)
+
+Так сервис работает постоянно на VPS: запускается при загрузке, перезапускается
+при сбое и пишет логи в системный журнал. Проверено на Ubuntu 22.04.
+
+Принципы:
+
+- сервис работает от отдельного пользователя `serverpulse` без прав root
+  и без возможности входа в систему;
+- код принадлежит root, сервис может его только читать;
+- сервис слушает только `127.0.0.1` и из интернета не виден, а доступ
+  к нему идёт через SSH-туннель. Файрвол менять не нужно.
+
+### Установка
+
+На Ubuntu 22.04 системный Python 3.10, а зависимостям нужен 3.11. Ставим 3.11
+из официального репозитория рядом с системным, не заменяя его:
+
+```bash
+sudo apt update
+sudo apt install -y python3.11 python3.11-venv git
+```
+
+Пользователь, код и окружение:
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin serverpulse
+sudo git clone https://github.com/Lourando/server-pulse.git /opt/server-pulse
+sudo python3.11 -m venv /opt/server-pulse/.venv
+sudo /opt/server-pulse/.venv/bin/python -m pip install -r /opt/server-pulse/requirements.txt
+```
+
+Настройки (`/opt/server-pulse/.env`), пример для сервера с VPN Amnezia:
+
+```bash
+sudo cp /opt/server-pulse/.env.example /opt/server-pulse/.env
+sudo nano /opt/server-pulse/.env      # WATCHED_PROCESSES=sshd,dockerd,amneziawg-go
+sudo chown root:serverpulse /opt/server-pulse/.env
+sudo chmod 640 /opt/server-pulse/.env
+```
+
+Служба:
+
+```bash
+sudo cp /opt/server-pulse/deploy/server-pulse.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now server-pulse
+```
+
+### Проверка и логи на сервере
+
+```bash
+systemctl status server-pulse              # состояние службы
+curl http://127.0.0.1:8000/health          # сервис отвечает
+curl http://127.0.0.1:8000/watch           # важные процессы запущены
+journalctl -u server-pulse -n 50           # последние 50 строк лога
+journalctl -u server-pulse -f              # лог в реальном времени
+```
+
+### Доступ с компьютера через SSH-туннель
+
+```bash
+ssh -L 8001:127.0.0.1:8000 root@IP_СЕРВЕРА
+```
+
+Пока это SSH-подключение открыто, сервис доступен на компьютере по адресу
+http://127.0.0.1:8001/docs. Используется локальный порт 8001, чтобы не
+конфликтовать с сервисом, запущенным локально на 8000.
+
+### Обновление
+
+```bash
+cd /opt/server-pulse
+sudo git pull
+sudo .venv/bin/python -m pip install -r requirements.txt
+sudo systemctl restart server-pulse
+```
+
 ## Структура проекта
 
 ```
@@ -224,6 +302,7 @@ server-pulse/
 ├── .env.example              # шаблон настроек
 ├── .gitignore
 ├── README.md
+├── deploy/server-pulse.service  # служба systemd для сервера
 └── .github/workflows/ci.yml  # GitHub Actions
 ```
 

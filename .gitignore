@@ -1,0 +1,19 @@
+# Виртуальное окружение: у каждого своё, собирается из requirements.txt
+.venv/
+
+# Настоящие настройки и секреты. В репозиторий кладём только .env.example
+.env
+
+# Служебные файлы Python и pytest
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Логи
+*.log
+
+# Файлы редакторов и системы
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,68 @@
+# Автоматическая проверка проекта на серверах GitHub.
+# Запускается при каждом push и pull request.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Workflow нужно только читать код, права на запись ему не даём
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    # Сервис должен работать и на ноутбуке с Windows, и на VPS с Ubuntu,
+    # поэтому тесты запускаются на обеих системах параллельно
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Download code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          # Кэш скачанных библиотек: повторные запуски идут быстрее
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -v
+
+  package:
+    name: Package application
+    # Упаковываем приложение, только если тесты прошли на всех системах
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download code
+        uses: actions/checkout@v7
+
+      - name: Upload application artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: server-pulse
+          path: |
+            app_final.py
+            requirements.txt
+            .env.example
+            README.md
+          if-no-files-found: error
+          # Иначе файлы с точкой в начале имени (.env.example) будут пропущены
+          include-hidden-files: true
+          retention-days: 30

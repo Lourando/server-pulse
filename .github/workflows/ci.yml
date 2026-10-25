@@ -59,6 +59,7 @@ jobs:
           name: server-pulse
           path: |
             app_final.py
+            dashboard.html
             requirements.txt
             .env.example
             README.md

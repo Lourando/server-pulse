@@ -1,5 +1,6 @@
 """Автоматические тесты Server Pulse. Запуск: python -m pytest -v"""
 
+import logging
 from types import SimpleNamespace
 
 import psutil
@@ -30,13 +31,13 @@ def test_version():
     assert response.json() == {"version": app_final.APP_VERSION}
 
 
-def test_root_uses_app_name(monkeypatch):
-    # monkeypatch временно подменяет значение и сам вернёт его после теста
-    monkeypatch.setattr(app_final, "APP_NAME", "Тестовый сервер")
-
+def test_root_returns_dashboard_page():
     response = client.get("/")
 
-    assert response.json()["service"] == "Тестовый сервер"
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    # Панель берёт данные из /summary, без него она пустая
+    assert "/summary" in response.text
 
 
 # --- Метрики и диск ---
@@ -164,6 +165,58 @@ def test_alerts_endpoint_with_fake_metrics(thresholds, monkeypatch):
     assert data["ok"] is False
     assert len(data["alerts"]) == 1
     assert data["alerts"][0]["type"] == "memory"
+
+
+def test_alert_logged_only_when_it_appears_and_disappears(monkeypatch, caplog):
+    # monkeypatch временно подменяет значение и сам вернёт его после теста
+    monkeypatch.setattr(app_final, "active_alerts", {})
+    caplog.set_level(logging.INFO, logger="server_pulse")
+    disk_alert = app_final.build_alerts(10, 10, 99, [])
+
+    app_final.log_alert_changes(disk_alert)
+    app_final.log_alert_changes(disk_alert)  # та же проблема ещё раз
+    app_final.log_alert_changes([])          # проблема ушла
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("ALERT disk" in m for m in messages) == 1
+    assert sum("Проблема устранена" in m for m in messages) == 1
+
+
+# --- Сводка для панели ---
+
+def test_summary_structure():
+    response = client.get("/summary")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["version"] == app_final.APP_VERSION
+    assert 0 <= data["cpu"]["percent"] <= 100
+    assert 0 <= data["memory"]["percent"] <= 100
+    assert 0 <= data["disk"]["percent"] <= 100
+    assert len(data["processes"]) == len(app_final.WATCHED_PROCESSES)
+    assert data["ok"] == (data["alerts"] == [])
+
+
+def test_summary_with_fake_metrics(thresholds, monkeypatch):
+    gb = 1024**3
+    monkeypatch.setattr(app_final, "active_alerts", {})
+    monkeypatch.setattr(app_final, "WATCHED_PROCESSES", ["no-such-process-12345"])
+    monkeypatch.setattr(app_final.psutil, "cpu_percent", lambda interval: 12.0)
+    monkeypatch.setattr(
+        app_final.psutil, "virtual_memory",
+        lambda: SimpleNamespace(percent=50.0, used=4 * gb, total=8 * gb),
+    )
+    monkeypatch.setattr(
+        app_final.psutil, "disk_usage",
+        lambda path: SimpleNamespace(percent=95.0, used=95 * gb, total=100 * gb),
+    )
+
+    data = client.get("/summary").json()
+
+    assert data["memory"] == {"percent": 50.0, "used_gb": 4.0, "total_gb": 8.0}
+    assert data["processes"] == [{"name": "no-such-process-12345", "running": False}]
+    assert data["ok"] is False
+    assert [alert["type"] for alert in data["alerts"]] == ["disk", "process"]
 
 
 # --- Настройки из окружения ---

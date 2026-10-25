@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Server Pulse</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --text: #1d2129;
+    --muted: #6b7280;
+    --border: #e3e5e9;
+    --track: #eceef1;
+    --ok: #1f9d55;
+    --ok-soft: #e3f5ea;
+    --warn: #c98a00;
+    --warn-soft: #fdf3dc;
+    --bad: #d93a3a;
+    --bad-soft: #fde6e6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111317;
+      --card: #1a1d23;
+      --text: #e8eaed;
+      --muted: #949aa5;
+      --border: #2a2e36;
+      --track: #2a2e36;
+      --ok: #3ccf7a;
+      --ok-soft: #173826;
+      --warn: #f0b429;
+      --warn-soft: #3a2f12;
+      --bad: #ff6b6b;
+      --bad-soft: #401c1c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 40px; }
+
+  header {
+    display: flex; flex-wrap: wrap; gap: 12px;
+    align-items: center; justify-content: space-between;
+    margin-bottom: 20px;
+  }
+  h1 { font-size: 22px; margin: 0; }
+  .host { color: var(--muted); font-size: 13px; margin-top: 2px; }
+
+  .status {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 14px; border-radius: 999px;
+    font-weight: 600; font-size: 14px;
+    background: var(--track); color: var(--muted);
+  }
+  .status.ok { background: var(--ok-soft); color: var(--ok); }
+  .status.bad { background: var(--bad-soft); color: var(--bad); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex: none; }
+
+  .grid {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    margin-bottom: 14px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px 18px;
+  }
+  .label { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+  .value { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .bar { height: 8px; background: var(--track); border-radius: 4px; margin-top: 10px; overflow: hidden; }
+  .bar > span { display: block; height: 100%; width: 0; border-radius: 4px; transition: width .4s, background .4s; }
+  .lvl-ok { color: var(--ok); }   .bar .lvl-ok { background: var(--ok); }
+  .lvl-warn { color: var(--warn); } .bar .lvl-warn { background: var(--warn); }
+  .lvl-bad { color: var(--bad); }  .bar .lvl-bad { background: var(--bad); }
+
+  .row { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border); }
+  li:first-child { border-top: none; }
+  .proc-name { font-family: ui-monospace, Consolas, monospace; font-size: 14px; flex: 1; overflow-wrap: anywhere; }
+  .proc-state { font-size: 13px; font-weight: 600; }
+  .empty { color: var(--muted); }
+
+  .offline {
+    display: none;
+    background: var(--bad-soft); color: var(--bad);
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; font-weight: 600;
+  }
+  body.is-offline .offline { display: block; }
+  body.is-offline .grid, body.is-offline .row { opacity: .45; }
+
+  footer {
+    margin-top: 22px; color: var(--muted); font-size: 13px;
+    display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between;
+  }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1 id="app-name">Server Pulse</h1>
+      <div class="host" id="host">подключение…</div>
+    </div>
+    <div class="status" id="status"><span class="dot"></span><span id="status-text">Загрузка…</span></div>
+  </header>
+
+  <div class="offline">Нет связи с сервисом. Показаны последние полученные данные, повторная попытка через 5 секунд.</div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="label">Процессор</div>
+      <div class="value" id="cpu-value">—</div>
+      <div class="bar"><span id="cpu-bar"></span></div>
+      <div class="sub" id="cpu-sub">&nbsp;</div>
+    </div>
+    <div class="card">
+      <div class="label">Память</div>
+      <div class="value" id="mem-value">—</div>
+      <div class="bar"><span id="mem-bar"></span></div>
+      <div class="sub" id="mem-sub">&nbsp;</div>
+    </div>
+    <div class="card">
+      <div class="label">Диск</div>
+      <div class="value" id="disk-value">—</div>
+      <div class="bar"><span id="disk-bar"></span></div>
+      <div class="sub" id="disk-sub">&nbsp;</div>
+    </div>
+    <div class="card">
+      <div class="label">Работает без перезагрузки</div>
+      <div class="value" id="uptime-value">—</div>
+      <div class="sub">с момента включения сервера</div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h2>Важные процессы</h2>
+      <ul id="processes"><li class="empty">—</li></ul>
+    </div>
+    <div class="card">
+      <h2>Проблемы</h2>
+      <ul id="alerts"><li class="empty">—</li></ul>
+    </div>
+  </div>
+
+  <footer>
+    <span id="updated">Ещё не обновлялось</span>
+    <span><span id="version"></span> · <a href="/docs">API и документация</a></span>
+  </footer>
+</div>
+
+<script>
+  const REFRESH_MS = 5000;
+  const $ = (id) => document.getElementById(id);
+
+  // Цвет показателя: красный при пороге, жёлтый на подходе к нему, иначе зелёный
+  function level(percent, threshold) {
+    if (percent >= threshold) return "lvl-bad";
+    if (percent >= threshold - 10) return "lvl-warn";
+    return "lvl-ok";
+  }
+
+  function showMeter(prefix, percent, threshold, subText) {
+    const lvl = level(percent, threshold);
+    const value = $(prefix + "-value");
+    value.textContent = percent.toFixed(1) + "%";
+    value.className = "value " + lvl;
+    const bar = $(prefix + "-bar");
+    bar.style.width = Math.min(percent, 100) + "%";
+    bar.className = lvl;
+    $(prefix + "-sub").textContent = subText;
+  }
+
+  function formatUptime(hours) {
+    const days = Math.floor(hours / 24);
+    const rest = Math.floor(hours % 24);
+    return days > 0 ? `${days} д ${rest} ч` : `${rest} ч`;
+  }
+
+  // Списки собираются через textContent, а не innerHTML:
+  // имена процессов приходят с сервера и не должны выполняться как разметка
+  function fillList(listId, items, render, emptyText) {
+    const list = $(listId);
+    list.replaceChildren();
+    if (items.length === 0) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = emptyText;
+      list.append(li);
+      return;
+    }
+    for (const item of items) list.append(render(item));
+  }
+
+  function render(data) {
+    document.title = (data.ok ? "✓ " : "⚠ ") + data.app_name;
+    $("app-name").textContent = data.app_name;
+    $("host").textContent = data.host;
+    $("version").textContent = "версия " + data.version;
+
+    const status = $("status");
+    status.className = "status " + (data.ok ? "ok" : "bad");
+    $("status-text").textContent = data.ok
+      ? "Всё в порядке"
+      : `Проблем: ${data.alerts.length}`;
+
+    const t = data.thresholds;
+    showMeter("cpu", data.cpu.percent, t.cpu,
+      `ядер: ${data.cpu.cores} · порог ${t.cpu}%`);
+    showMeter("mem", data.memory.percent, t.memory,
+      `${data.memory.used_gb} из ${data.memory.total_gb} ГБ · порог ${t.memory}%`);
+    showMeter("disk", data.disk.percent, t.disk,
+      `${data.disk.used_gb} из ${data.disk.total_gb} ГБ (${data.disk.path}) · порог ${t.disk}%`);
+    $("uptime-value").textContent = formatUptime(data.uptime_hours);
+
+    fillList("processes", data.processes, (p) => {
+      const li = document.createElement("li");
+      const dot = document.createElement("span");
+      dot.className = "dot " + (p.running ? "lvl-ok" : "lvl-bad");
+      const name = document.createElement("span");
+      name.className = "proc-name";
+      name.textContent = p.name;
+      const state = document.createElement("span");
+      state.className = "proc-state " + (p.running ? "lvl-ok" : "lvl-bad");
+      state.textContent = p.running ? "работает" : "не запущен";
+      li.append(dot, name, state);
+      return li;
+    }, "Список пуст: задайте WATCHED_PROCESSES в .env");
+
+    fillList("alerts", data.alerts, (a) => {
+      const li = document.createElement("li");
+      const dot = document.createElement("span");
+      dot.className = "dot lvl-bad";
+      const text = document.createElement("span");
+      text.textContent = a.message;
+      li.append(dot, text);
+      return li;
+    }, "Проблем нет");
+
+    $("updated").textContent = "Обновлено в " + new Date().toLocaleTimeString("ru-RU");
+  }
+
+  async function refresh() {
+    try {
+      const response = await fetch("/summary", { cache: "no-store" });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      render(await response.json());
+      document.body.classList.remove("is-offline");
+    } catch (error) {
+      document.body.classList.add("is-offline");
+      $("status").className = "status";
+      $("status-text").textContent = "Нет связи";
+    } finally {
+      setTimeout(refresh, REFRESH_MS);
+    }
+  }
+
+  refresh();
+</script>
+</body>
+</html>

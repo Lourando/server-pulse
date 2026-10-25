@@ -2,16 +2,23 @@
 
 import logging
 import os
+import platform
+import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 
 import psutil
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
 
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.4.0"
+
+# Страница-панель лежит рядом с этим файлом
+DASHBOARD_FILE = Path(__file__).parent / "dashboard.html"
 
 # Подхватываем настройки из файла .env, если он есть.
 # Переменные, уже заданные в системе, имеют приоритет над файлом
@@ -99,12 +106,10 @@ app = FastAPI(
 )
 
 
-@app.get("/")
-def root():
-    return {
-        "service": APP_NAME,
-        "message": "Сервис работает. Документация: /docs",
-    }
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def dashboard():
+    """Страница-панель для человека. Данные она берёт из /summary."""
+    return DASHBOARD_FILE.read_text(encoding="utf-8")
 
 
 @app.get("/health")
@@ -222,13 +227,18 @@ def process_status(name: str):
     return {"name": name, "running": len(pids) > 0, "pids": pids}
 
 
+def watched_statuses():
+    """Состояние каждого процесса из настройки WATCHED_PROCESSES."""
+    return [
+        {"name": name, "running": len(find_processes(name)) > 0}
+        for name in WATCHED_PROCESSES
+    ]
+
+
 @app.get("/watch")
 def watch():
     """Проверяет все важные процессы из настройки WATCHED_PROCESSES."""
-    statuses = []
-    for name in WATCHED_PROCESSES:
-        statuses.append({"name": name, "running": len(find_processes(name)) > 0})
-
+    statuses = watched_statuses()
     all_running = all(item["running"] for item in statuses)
     return {"all_running": all_running, "processes": statuses}
 
@@ -239,28 +249,54 @@ def build_alerts(cpu_percent, memory_percent, disk_percent, missing_processes):
     Функция ничего не измеряет сама, только принимает числа.
     Поэтому её легко проверить тестом на любых, даже выдуманных, значениях.
     """
+    # key отличает одну проблему от другой: у "memory" сегодня 86%, а через
+    # минуту 87%, но это та же проблема, и повторно в лог её писать не нужно
     alerts = []
     if cpu_percent >= CPU_ALERT_PERCENT:
         alerts.append({
             "type": "cpu",
+            "key": "cpu",
             "message": f"CPU {cpu_percent}% (порог {CPU_ALERT_PERCENT}%)",
         })
     if memory_percent >= RAM_ALERT_PERCENT:
         alerts.append({
             "type": "memory",
+            "key": "memory",
             "message": f"Память {memory_percent}% (порог {RAM_ALERT_PERCENT}%)",
         })
     if disk_percent >= DISK_ALERT_PERCENT:
         alerts.append({
             "type": "disk",
+            "key": "disk",
             "message": f"Диск {disk_percent}% (порог {DISK_ALERT_PERCENT}%)",
         })
     for name in missing_processes:
         alerts.append({
             "type": "process",
+            "key": f"process:{name}",
             "message": f"Процесс {name} не запущен",
         })
     return alerts
+
+
+# Проблемы, о которых уже написано в лог. Панель опрашивает сервис каждые
+# несколько секунд, и без этого одна и та же тревога заполнила бы весь лог
+active_alerts = {}
+active_alerts_lock = threading.Lock()
+
+
+def log_alert_changes(found):
+    """Пишет в лог только изменения: проблема появилась или исчезла."""
+    current = {alert["key"]: alert for alert in found}
+    with active_alerts_lock:
+        for key, alert in current.items():
+            if key not in active_alerts:
+                logger.warning("ALERT %s: %s", alert["type"], alert["message"])
+        for key, alert in active_alerts.items():
+            if key not in current:
+                logger.info("Проблема устранена: %s", alert["message"])
+        active_alerts.clear()
+        active_alerts.update(current)
 
 
 @app.get("/alerts")
@@ -273,13 +309,52 @@ def alerts():
         disk_percent=psutil.disk_usage(DEFAULT_DISK_PATH).percent,
         missing_processes=missing,
     )
-
-    for alert in found:
-        logger.warning("ALERT %s: %s", alert["type"], alert["message"])
-    if not found:
-        logger.info("Проверка порогов: всё в норме")
-
+    log_alert_changes(found)
     return {"ok": len(found) == 0, "alerts": found}
+
+
+@app.get("/summary")
+def summary():
+    """Всё состояние сервера одним ответом. Из него рисуется панель на /."""
+    cpu_percent = psutil.cpu_percent(interval=0.5)
+    memory = psutil.virtual_memory()
+    disk_usage = psutil.disk_usage(DEFAULT_DISK_PATH)
+    processes = watched_statuses()
+
+    found = build_alerts(
+        cpu_percent=cpu_percent,
+        memory_percent=memory.percent,
+        disk_percent=disk_usage.percent,
+        missing_processes=[p["name"] for p in processes if not p["running"]],
+    )
+    log_alert_changes(found)
+
+    return {
+        "app_name": APP_NAME,
+        "version": APP_VERSION,
+        "host": platform.node(),
+        "uptime_hours": round((time.time() - psutil.boot_time()) / 3600, 1),
+        "cpu": {"percent": cpu_percent, "cores": psutil.cpu_count()},
+        "memory": {
+            "percent": memory.percent,
+            "used_gb": to_gb(memory.used),
+            "total_gb": to_gb(memory.total),
+        },
+        "disk": {
+            "path": DEFAULT_DISK_PATH,
+            "percent": disk_usage.percent,
+            "used_gb": to_gb(disk_usage.used),
+            "total_gb": to_gb(disk_usage.total),
+        },
+        "processes": processes,
+        "thresholds": {
+            "cpu": CPU_ALERT_PERCENT,
+            "memory": RAM_ALERT_PERCENT,
+            "disk": DISK_ALERT_PERCENT,
+        },
+        "ok": len(found) == 0,
+        "alerts": found,
+    }
 
 
 def classify_temperature(celsius):

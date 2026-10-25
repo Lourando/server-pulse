@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 
 # Страница-панель лежит рядом с этим файлом
 DASHBOARD_FILE = Path(__file__).parent / "dashboard.html"
@@ -44,6 +44,24 @@ if LOG_FILE:
         logging.getLogger(uvicorn_logger).addHandler(log_handlers[-1])
 
 logger = logging.getLogger("server_pulse")
+
+
+class SkipSummaryRequests(logging.Filter):
+    """Не пишет в лог строки uvicorn о запросах к /summary.
+
+    Панель запрашивает /summary каждые 5 секунд, и без фильтра эти строки
+    вытесняли бы из лога всё полезное: старт сервиса, тревоги, ошибки.
+    """
+
+    def filter(self, record):
+        # У строк доступа uvicorn аргументы: адрес, метод, путь, версия, код
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and str(args[2]).startswith("/summary"):
+            return False
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(SkipSummaryRequests())
 
 
 def read_percent(name, default):

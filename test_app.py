@@ -182,6 +182,22 @@ def test_alert_logged_only_when_it_appears_and_disappears(monkeypatch, caplog):
     assert sum("Проблема устранена" in m for m in messages) == 1
 
 
+def make_access_record(path):
+    """Строка лога в том виде, в каком её создаёт uvicorn для каждого запроса."""
+    return logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 0,
+        '%s - "%s %s HTTP/%s" %d', ("127.0.0.1:5000", "GET", path, "1.1", 200), None,
+    )
+
+
+def test_summary_requests_not_logged():
+    log_filter = app_final.SkipSummaryRequests()
+
+    assert log_filter.filter(make_access_record("/summary")) is False
+    assert log_filter.filter(make_access_record("/alerts")) is True
+    assert log_filter.filter(make_access_record("/health")) is True
+
+
 # --- Сводка для панели ---
 
 def test_summary_structure():

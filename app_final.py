@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 
 # Подхватываем настройки из файла .env, если он есть.
 # Переменные, уже заданные в системе, имеют приоритет над файлом
@@ -52,6 +52,13 @@ CPU_ALERT_PERCENT = read_percent("CPU_ALERT_PERCENT", 90)
 RAM_ALERT_PERCENT = read_percent("RAM_ALERT_PERCENT", 85)
 DISK_ALERT_PERCENT = read_percent("DISK_ALERT_PERCENT", 90)
 WATCHED_PROCESSES = read_list("WATCHED_PROCESSES", "sshd")
+
+# Выше этой температуры датчик считается горячим
+TEMP_ALERT_CELSIUS = float(os.getenv("TEMP_ALERT_CELSIUS", "80"))
+# Таких температур у работающего компьютера не бывает: датчик, скорее всего, врёт
+SUSPICIOUS_HIGH_CELSIUS = 105
+SUSPICIOUS_LOW_CELSIUS = -20
+NUCLEAR_CELSIUS = 1000
 
 # Корень системного диска: "/" на Linux, "C:\" (или другой диск) на Windows
 DEFAULT_DISK_PATH = os.getenv("DISK_PATH", os.path.abspath(os.sep))
@@ -259,3 +266,74 @@ def alerts():
         logger.info("Проверка порогов: всё в норме")
 
     return {"ok": len(found) == 0, "alerts": found}
+
+
+def classify_temperature(celsius):
+    """Оценивает показание датчика: ok, hot или suspicious, с комментарием.
+
+    Как и build_alerts, функция работает только с числом,
+    поэтому проверяется тестами на любых значениях.
+    """
+    if celsius >= NUCLEAR_CELSIUS:
+        return "suspicious", (
+            "Горячее лавы. Раз вы читаете этот ответ, ядерного взрыва "
+            "не случилось: датчик врёт."
+        )
+    if celsius >= SUSPICIOUS_HIGH_CELSIUS:
+        return "suspicious", (
+            "По данным датчика, плата горит. Пожарные не приехали, дыма нет: "
+            "скорее всего, датчик не подключён."
+        )
+    if celsius <= SUSPICIOUS_LOW_CELSIUS:
+        return "suspicious", (
+            "Холоднее, чем зимой в Якутске. Скорее всего, датчик не подключён."
+        )
+    if celsius >= TEMP_ALERT_CELSIUS:
+        return "hot", "Горячо. Стоит проверить охлаждение и нагрузку."
+    return "ok", "Температура в норме."
+
+
+def read_temperatures():
+    """Читает датчики температуры. Возвращает None, если система их не отдаёт.
+
+    psutil умеет читать температуры только на Linux. На Windows и macOS
+    этой функции нет, а на виртуальном сервере датчиков обычно нет вовсе.
+    """
+    if not hasattr(psutil, "sensors_temperatures"):
+        return None
+    sensors = psutil.sensors_temperatures()
+    if not sensors:
+        return None
+
+    readings = []
+    for chip, entries in sensors.items():
+        for index, entry in enumerate(entries):
+            readings.append({
+                "sensor": f"{chip}/{entry.label or index}",
+                "celsius": entry.current,
+            })
+    return readings
+
+
+@app.get("/temperature")
+def temperature():
+    """Температуры датчиков с проверкой на правдоподобность."""
+    readings = read_temperatures()
+    if readings is None:
+        logger.info("Датчики температуры недоступны на этой системе")
+        return {
+            "available": False,
+            "message": "Датчики температуры недоступны на этой системе",
+            "sensors": [],
+        }
+
+    sensors = []
+    for reading in readings:
+        status, comment = classify_temperature(reading["celsius"])
+        sensors.append({**reading, "status": status, "comment": comment})
+        if status != "ok":
+            logger.warning(
+                "Датчик %s: %s °C (%s)", reading["sensor"], reading["celsius"], status
+            )
+
+    return {"available": True, "sensors": sensors}

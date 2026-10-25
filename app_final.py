@@ -1,32 +1,87 @@
 """Server Pulse: сервис для мониторинга состояния сервера."""
 
+import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from typing import Literal
 
 import psutil
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
+
+# Подхватываем настройки из файла .env, если он есть.
+# Переменные, уже заданные в системе, имеют приоритет над файлом
+load_dotenv()
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("server_pulse")
+
+
+def read_percent(name, default):
+    """Читает порог в процентах из окружения. При ошибке берёт значение по умолчанию."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("%s=%r не число, используется %s", name, raw, default)
+        return default
+    if not 0 < value <= 100:
+        logger.warning("%s=%s вне диапазона 0-100, используется %s", name, value, default)
+        return default
+    return value
+
+
+def read_list(name, default):
+    """Читает список через запятую: "sshd, xray" -> ["sshd", "xray"]."""
+    raw = os.getenv(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+APP_NAME = os.getenv("APP_NAME", "Server Pulse")
+CPU_ALERT_PERCENT = read_percent("CPU_ALERT_PERCENT", 90)
+RAM_ALERT_PERCENT = read_percent("RAM_ALERT_PERCENT", 85)
+DISK_ALERT_PERCENT = read_percent("DISK_ALERT_PERCENT", 90)
+WATCHED_PROCESSES = read_list("WATCHED_PROCESSES", "sshd")
 
 # Корень системного диска: "/" на Linux, "C:\" (или другой диск) на Windows
-DEFAULT_DISK_PATH = os.path.abspath(os.sep)
+DEFAULT_DISK_PATH = os.getenv("DISK_PATH", os.path.abspath(os.sep))
 
-# Процессы, за которыми следит /watch. На шаге 5 список переедет в .env
-WATCHED_PROCESSES = ["python", "sshd"]
+
+@asynccontextmanager
+async def lifespan(app):
+    # Код до yield выполняется при старте сервиса, после yield при остановке
+    logger.info("%s %s запущен", APP_NAME, APP_VERSION)
+    logger.info(
+        "Пороги: CPU %s%%, RAM %s%%, диск %s%% (%s)",
+        CPU_ALERT_PERCENT, RAM_ALERT_PERCENT, DISK_ALERT_PERCENT, DEFAULT_DISK_PATH,
+    )
+    logger.info("Отслеживаемые процессы: %s", ", ".join(WATCHED_PROCESSES) or "нет")
+    yield
+    logger.info("%s остановлен", APP_NAME)
+
 
 app = FastAPI(
-    title="Server Pulse",
+    title=APP_NAME,
     description="Мониторинг CPU, памяти, дисков и важных процессов сервера.",
     version=APP_VERSION,
+    lifespan=lifespan,
 )
 
 
 @app.get("/")
 def root():
     return {
-        "service": "Server Pulse",
+        "service": APP_NAME,
         "message": "Сервис работает. Документация: /docs",
     }
 
@@ -68,6 +123,7 @@ def disk(path: str = DEFAULT_DISK_PATH):
     try:
         usage = psutil.disk_usage(path)
     except OSError:
+        logger.warning("Запрошен несуществующий путь: %s", path)
         raise HTTPException(status_code=404, detail=f"Путь не найден: {path}")
 
     return {
@@ -147,10 +203,59 @@ def process_status(name: str):
 
 @app.get("/watch")
 def watch():
-    """Проверяет все важные процессы из списка WATCHED_PROCESSES."""
+    """Проверяет все важные процессы из настройки WATCHED_PROCESSES."""
     statuses = []
     for name in WATCHED_PROCESSES:
         statuses.append({"name": name, "running": len(find_processes(name)) > 0})
 
     all_running = all(item["running"] for item in statuses)
     return {"all_running": all_running, "processes": statuses}
+
+
+def build_alerts(cpu_percent, memory_percent, disk_percent, missing_processes):
+    """Сравнивает показания с порогами и возвращает список проблем.
+
+    Функция ничего не измеряет сама, только принимает числа.
+    Поэтому её легко проверить тестом на любых, даже выдуманных, значениях.
+    """
+    alerts = []
+    if cpu_percent >= CPU_ALERT_PERCENT:
+        alerts.append({
+            "type": "cpu",
+            "message": f"CPU {cpu_percent}% (порог {CPU_ALERT_PERCENT}%)",
+        })
+    if memory_percent >= RAM_ALERT_PERCENT:
+        alerts.append({
+            "type": "memory",
+            "message": f"Память {memory_percent}% (порог {RAM_ALERT_PERCENT}%)",
+        })
+    if disk_percent >= DISK_ALERT_PERCENT:
+        alerts.append({
+            "type": "disk",
+            "message": f"Диск {disk_percent}% (порог {DISK_ALERT_PERCENT}%)",
+        })
+    for name in missing_processes:
+        alerts.append({
+            "type": "process",
+            "message": f"Процесс {name} не запущен",
+        })
+    return alerts
+
+
+@app.get("/alerts")
+def alerts():
+    """Собирает текущие показания и сообщает, что из них выходит за пороги."""
+    missing = [name for name in WATCHED_PROCESSES if not find_processes(name)]
+    found = build_alerts(
+        cpu_percent=psutil.cpu_percent(interval=0.5),
+        memory_percent=psutil.virtual_memory().percent,
+        disk_percent=psutil.disk_usage(DEFAULT_DISK_PATH).percent,
+        missing_processes=missing,
+    )
+
+    for alert in found:
+        logger.warning("ALERT %s: %s", alert["type"], alert["message"])
+    if not found:
+        logger.info("Проверка порогов: всё в норме")
+
+    return {"ok": len(found) == 0, "alerts": found}
